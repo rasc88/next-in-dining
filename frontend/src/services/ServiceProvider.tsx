@@ -1,11 +1,11 @@
 import { createContext, useContext, type ReactNode } from 'react';
 import type { IWaitlistService } from './IWaitlistService';
-import { mockWaitlistService } from './mockWaitlistService';
+import { restWaitlistService } from './restWaitlistService';
 
 const ServiceContext = createContext<IWaitlistService | null>(null);
 
 export function ServiceProvider({
-  service = mockWaitlistService,
+  service = restWaitlistService,
   children,
 }: {
   service?: IWaitlistService;

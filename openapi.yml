@@ -1,0 +1,535 @@
+openapi: 3.0.3
+info:
+  title: Restaurant Waitlist Manager API
+  version: "1.0.0"
+  description: |
+    Backend contract derived directly from the frontend's services layer
+    (`src/services/IWaitlistService.ts` and `mockWaitlistService.ts`).
+    Every operation below corresponds to exactly one method the frontend
+    calls; nothing here is speculative beyond what the UI already does.
+
+    ## Method → endpoint map
+    | Service method       | Endpoint                                  |
+    |-----------------------|-------------------------------------------|
+    | `login`                | `POST /v1/auth/login`                    |
+    | `logout`                | `POST /v1/auth/logout`                  |
+    | `joinWaitlist`          | `POST /v1/waitlist/join`                |
+    | `getActiveParties`      | `GET /v1/waitlist/active`                |
+    | `updatePartyState`      | `PATCH /v1/waitlist/{partyId}/state`    |
+    | `getGuestStatus`        | `GET /v1/waitlist/me`                   |
+    | `cancelParty`           | `POST /v1/waitlist/me/cancel`           |
+    | `subscribePush`         | `POST /v1/waitlist/me/push-subscribe`   |
+    | `onHostQueueUpdate`     | WebSocket event `queue_updated`         |
+    | `onGuestUpdate`         | WebSocket events `position_changed`, `table_ready` |
+
+    ## Realtime channel (not expressible in OpenAPI)
+    The host board and guest status page both hold open a WebSocket
+    connection instead of polling. OpenAPI has no first-class way to
+    describe this, so it's documented here instead of as a path:
+
+    - **Connect:** `wss://{host}/v1/waitlist/ws`
+      - Host clients authenticate with the host bearer token.
+      - Guest clients authenticate with the guest token.
+    - **Client → Server:** `auth_subscribe` (sent once on connect), `ping`
+    - **Server → Host client:** `queue_updated` — payload shape matches
+      the `ActiveQueue` schema below (same body as `GET /v1/waitlist/active`).
+      Sent after every state change.
+    - **Server → Guest client:** `position_changed` / `table_ready` —
+      payload shape matches the `GuestStatus` schema below (same body as
+      `GET /v1/waitlist/me`). Sent whenever that guest's own party changes.
+
+    Every REST write below (join, state update, cancel, push-subscribe)
+    must trigger the matching WebSocket broadcast(s) — that's how the
+    frontend gets live updates without re-fetching.
+
+    ## Authentication
+    Two independent bearer credentials exist; they are never interchangeable:
+    - **Host session token** — returned by `POST /v1/auth/login`. Required
+      on every host-only endpoint.
+    - **Guest token** — returned by `POST /v1/waitlist/join`. Required on
+      every guest-scoped endpoint (`/v1/waitlist/me*`). It identifies a
+      single party and is the frontend's only handle on that party — the
+      frontend never learns a guest-scoped party's UUID, only host clients do.
+
+servers:
+  - url: https://waitlist.internal/v1
+    description: Placeholder base URL — replace with the real deployment.
+
+security: []
+
+tags:
+  - name: Auth
+    description: Host session management.
+  - name: Waitlist (Host)
+    description: Endpoints requiring an authenticated host session.
+  - name: Waitlist (Guest)
+    description: Endpoints scoped to a single party via its guest token.
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate a host
+      description: Public endpoint. No authentication required.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginCredentials'
+      responses:
+        '200':
+          description: Signed in successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '401':
+          description: Incorrect email or password.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: INVALID_CREDENTIALS
+                message: Incorrect email or password.
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: End the current host session
+      description: Requires host authentication.
+      operationId: logout
+      security:
+        - hostAuth: []
+      responses:
+        '204':
+          description: Signed out. The host bearer token is invalidated.
+        '401':
+          description: Missing or invalid host session token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /waitlist/join:
+    post:
+      tags: [Waitlist (Host)]
+      summary: Add a party to the waitlist
+      description: |
+        Public endpoint — used both by the guest self check-in form and by
+        a host entering a walk-in manually. Creates a party in `WAITING`
+        state and issues a guest token that is the caller's only way to
+        look up or act on that party afterward.
+      operationId: joinWaitlist
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JoinWaitlistInput'
+      responses:
+        '201':
+          description: Party created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JoinWaitlistResult'
+        '400':
+          description: Invalid or missing fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /waitlist/active:
+    get:
+      tags: [Waitlist (Host)]
+      summary: Get the current board
+      description: |
+        Returns every party still relevant to the shift (so the host can
+        take recovery actions on recently resolved parties too) plus
+        aggregate queue metrics. Requires host authentication.
+      operationId: getActiveParties
+      security:
+        - hostAuth: []
+      responses:
+        '200':
+          description: Current queue snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActiveQueue'
+        '401':
+          description: Missing or invalid host session token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /waitlist/{partyId}/state:
+    patch:
+      tags: [Waitlist (Host)]
+      summary: Transition a party's state
+      description: |
+        Applies one action from the state engine. Valid actions per
+        current state:
+
+        | Current state | Allowed actions                          |
+        |----------------|-------------------------------------------|
+        | `WAITING`       | `NOTIFY`                                 |
+        | `NOTIFIED`      | `SEAT`, `NO_SHOW`, `RE_NOTIFY`            |
+        | `SEATED`        | `UN_SEAT`                                |
+        | `CANCELLED` / `NO_SHOW` / `EXPIRED` | none (terminal)        |
+
+        Requires host authentication.
+      operationId: updatePartyState
+      security:
+        - hostAuth: []
+      parameters:
+        - name: partyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  $ref: '#/components/schemas/PartyAction'
+      responses:
+        '200':
+          description: Party updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistParty'
+        '401':
+          description: Missing or invalid host session token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: No party exists with that id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: NOT_FOUND
+                message: No party with id <partyId>.
+        '409':
+          description: The action does not apply to the party's current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: INVALID_TRANSITION
+                message: Cannot apply "SEAT" to a party in state "WAITING".
+
+  /waitlist/me:
+    get:
+      tags: [Waitlist (Guest)]
+      summary: Get my own live status
+      description: |
+        Returns the party identified by the caller's guest token,
+        including their live queue position. `position` is `null` once
+        the party is no longer `WAITING`. Requires guest authentication.
+      operationId: getGuestStatus
+      security:
+        - guestAuth: []
+      responses:
+        '200':
+          description: Current status for this guest token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuestStatus'
+        '401':
+          description: Missing, invalid, or expired guest token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: TOKEN_EXPIRED
+                message: This guest link is no longer valid.
+
+  /waitlist/me/cancel:
+    post:
+      tags: [Waitlist (Guest)]
+      summary: Cancel my own spot
+      description: |
+        Only allowed while the party is `WAITING` or `NOTIFIED`. Requires
+        guest authentication.
+      operationId: cancelParty
+      security:
+        - guestAuth: []
+      responses:
+        '200':
+          description: Party cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistParty'
+        '401':
+          description: Missing, invalid, or expired guest token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: The party can no longer be cancelled (already resolved).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: INVALID_TRANSITION
+                message: A party in state "SEATED" can no longer be cancelled.
+
+  /waitlist/me/push-subscribe:
+    post:
+      tags: [Waitlist (Guest)]
+      summary: Register a Web Push subscription for my party
+      description: |
+        Stores a VAPID Web Push subscription so a `table_ready` alert can
+        be delivered as a native push notification in addition to the
+        WebSocket event. Requires guest authentication.
+      operationId: subscribePush
+      security:
+        - guestAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushSubscriptionInput'
+      responses:
+        '204':
+          description: Subscription stored.
+        '401':
+          description: Missing, invalid, or expired guest token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: Malformed push subscription payload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    hostAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque session token
+      description: "Token returned by `POST /auth/login`, sent as `Authorization: Bearer <token>`."
+    guestAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque guest token
+      description: |
+        Token returned by `POST /waitlist/join`, sent as
+        `Authorization: Bearer <guestToken>`. This is the same value the
+        frontend embeds in the guest's shareable status-page URL
+        (`/status/:token`); the API accepts it as a bearer credential
+        rather than a URL path segment so it is not repeated in server logs.
+
+  schemas:
+    PartyState:
+      type: string
+      enum: [WAITING, NOTIFIED, SEATED, CANCELLED, NO_SHOW, EXPIRED]
+
+    PartyAction:
+      type: string
+      description: Host-triggered transitions. Terminal states accept no action.
+      enum: [NOTIFY, SEAT, NO_SHOW, RE_NOTIFY, UN_SEAT]
+
+    SeatingCategory:
+      type: string
+      description: Free-text in the API; the frontend offers these as suggested values.
+      example: Indoor
+
+    HostUser:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+
+    LoginCredentials:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    AuthSession:
+      type: object
+      required: [token, host]
+      properties:
+        token:
+          type: string
+          description: Host bearer session token.
+        host:
+          $ref: '#/components/schemas/HostUser'
+
+    JoinWaitlistInput:
+      type: object
+      required: [guestName, phoneNumber, partySize, seatingCategory]
+      properties:
+        guestName:
+          type: string
+        phoneNumber:
+          type: string
+        partySize:
+          type: integer
+          minimum: 1
+          maximum: 20
+        seatingCategory:
+          $ref: '#/components/schemas/SeatingCategory'
+        notes:
+          type: string
+          nullable: true
+
+    WaitlistParty:
+      type: object
+      required:
+        - id
+        - guestName
+        - phoneNumber
+        - partySize
+        - seatingCategory
+        - state
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        guestName:
+          type: string
+        phoneNumber:
+          type: string
+        partySize:
+          type: integer
+        seatingCategory:
+          $ref: '#/components/schemas/SeatingCategory'
+        notes:
+          type: string
+          nullable: true
+        state:
+          $ref: '#/components/schemas/PartyState'
+        createdAt:
+          type: string
+          format: date-time
+        notifiedAt:
+          type: string
+          format: date-time
+          nullable: true
+        resolvedAt:
+          type: string
+          format: date-time
+          nullable: true
+        pushSubscribed:
+          type: boolean
+          nullable: true
+
+    JoinWaitlistResult:
+      type: object
+      required: [party, guestToken]
+      properties:
+        party:
+          $ref: '#/components/schemas/WaitlistParty'
+        guestToken:
+          type: string
+          description: Bearer credential for all `/waitlist/me*` endpoints and the guest WebSocket channel.
+
+    QueueMetrics:
+      type: object
+      required: [activeWaiting, peakHourlyVolume]
+      properties:
+        activeWaiting:
+          type: integer
+          description: Count of parties currently in state WAITING.
+        peakHourlyVolume:
+          type: integer
+          description: Highest concurrent WAITING count observed this shift.
+
+    ActiveQueue:
+      type: object
+      required: [parties, metrics]
+      properties:
+        parties:
+          type: array
+          items:
+            $ref: '#/components/schemas/WaitlistParty'
+        metrics:
+          $ref: '#/components/schemas/QueueMetrics'
+
+    GuestStatus:
+      allOf:
+        - $ref: '#/components/schemas/WaitlistParty'
+        - type: object
+          required: [position, totalWaiting]
+          properties:
+            position:
+              type: integer
+              nullable: true
+              description: 1-based position among WAITING parties; null once no longer WAITING.
+            totalWaiting:
+              type: integer
+
+    PushSubscriptionInput:
+      type: object
+      description: Standard W3C PushSubscription JSON, as produced by `PushSubscription.toJSON()`.
+      required: [endpoint, keys]
+      properties:
+        endpoint:
+          type: string
+          format: uri
+        expirationTime:
+          type: number
+          nullable: true
+        keys:
+          type: object
+          required: [p256dh, auth]
+          properties:
+            p256dh:
+              type: string
+            auth:
+              type: string
+
+    WaitlistErrorCode:
+      type: string
+      enum: [INVALID_CREDENTIALS, INVALID_TRANSITION, NOT_FOUND, TOKEN_EXPIRED]
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          $ref: '#/components/schemas/WaitlistErrorCode'
+        message:
+          type: string
