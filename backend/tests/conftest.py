@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+
+# Must be set before anything imports app.db, which reads DATABASE_URL at
+# import time. Keeps tests off the dev database file.
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+
 import pytest
 from fastapi.testclient import TestClient
 

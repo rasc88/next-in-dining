@@ -5,7 +5,19 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app import db
 from app.auth import hash_password, verify_password
+from app.db_models import (
+    GuestTokenRow,
+    HostTokenRow,
+    HostUserRow,
+    PushSubscriptionRow,
+    ShiftMetricsRow,
+    WaitlistPartyRow,
+)
 from app.models import PartyAction, PartyState, QueueMetrics, WaitlistErrorCode, WaitlistParty
 
 WAITING_HARD_LIMIT = timedelta(hours=12)
@@ -55,45 +67,95 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    """SQLite round-trips our UTC datetimes as naive; treat naive as UTC."""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
+
+
+def _party_from_row(row: WaitlistPartyRow) -> WaitlistParty:
+    return WaitlistParty(
+        id=row.id,
+        guest_name=row.guest_name,
+        phone_number=row.phone_number,
+        party_size=row.party_size,
+        seating_category=row.seating_category,
+        notes=row.notes,
+        state=row.state,
+        created_at=_as_utc(row.created_at),
+        notified_at=_as_utc(row.notified_at),
+        resolved_at=_as_utc(row.resolved_at),
+        push_subscribed=row.push_subscribed,
+    )
+
+
 class Store:
+    """Thin wrapper over the database: each method opens its own session.
+
+    Nothing here holds request-scoped state, so a plain module-level
+    instance (see `store` below) can serve every request the same way the
+    original in-memory version did.
+    """
+
     def __init__(self) -> None:
-        self.reset()
+        db.init_db()
+        with db.SessionLocal() as session:
+            if session.query(HostUserRow).count() == 0:
+                self._seed(session)
+                session.commit()
 
     def reset(self) -> None:
-        self.hosts_by_email: dict[str, HostRecord] = {}
-        self.host_tokens: dict[str, str] = {}
-        self.parties: dict[str, WaitlistParty] = {}
-        self.guest_tokens: dict[str, str] = {}
-        self.push_subscriptions: dict[str, dict] = {}
-        self.peak_hourly_volume: int = 0
-        self._seed()
+        """Drop and recreate every table, then reseed. Used by tests for isolation."""
+        db.Base.metadata.drop_all(db.engine)
+        db.Base.metadata.create_all(db.engine)
+        with db.SessionLocal() as session:
+            self._seed(session)
+            session.commit()
 
     # -- hosts ---------------------------------------------------------
 
+    def _insert_host(self, session: Session, email: str, password: str) -> HostUserRow:
+        row = HostUserRow(id=str(uuid.uuid4()), email=email, password_hash=hash_password(password))
+        session.add(row)
+        return row
+
     def create_host(self, email: str, password: str) -> HostRecord:
-        host = HostRecord(id=str(uuid.uuid4()), email=email, password_hash=hash_password(password))
-        self.hosts_by_email[email] = host
-        return host
+        with db.SessionLocal() as session:
+            row = self._insert_host(session, email, password)
+            session.commit()
+            return HostRecord(id=row.id, email=row.email, password_hash=row.password_hash)
 
     def verify_host_login(self, email: str, password: str) -> HostRecord | None:
-        host = self.hosts_by_email.get(email)
-        if host is None or not verify_password(password, host.password_hash):
-            return None
-        return host
+        with db.SessionLocal() as session:
+            row = session.scalar(select(HostUserRow).where(HostUserRow.email == email))
+            if row is None or not verify_password(password, row.password_hash):
+                return None
+            return HostRecord(id=row.id, email=row.email, password_hash=row.password_hash)
 
     def create_host_token(self, host_id: str) -> str:
         token = secrets.token_urlsafe(32)
-        self.host_tokens[token] = host_id
+        with db.SessionLocal() as session:
+            session.add(HostTokenRow(token=token, host_id=host_id))
+            session.commit()
         return token
 
     def revoke_host_token(self, token: str) -> None:
-        self.host_tokens.pop(token, None)
+        with db.SessionLocal() as session:
+            row = session.get(HostTokenRow, token)
+            if row is not None:
+                session.delete(row)
+                session.commit()
 
     def get_host_by_token(self, token: str) -> HostRecord | None:
-        host_id = self.host_tokens.get(token)
-        if host_id is None:
-            return None
-        return next((h for h in self.hosts_by_email.values() if h.id == host_id), None)
+        with db.SessionLocal() as session:
+            token_row = session.get(HostTokenRow, token)
+            if token_row is None:
+                return None
+            host_row = session.get(HostUserRow, token_row.host_id)
+            if host_row is None:
+                return None
+            return HostRecord(id=host_row.id, email=host_row.email, password_hash=host_row.password_hash)
 
     # -- parties ---------------------------------------------------------
 
@@ -105,113 +167,154 @@ class Store:
         seating_category: str,
         notes: str | None,
     ) -> tuple[WaitlistParty, str]:
-        party = WaitlistParty(
-            id=str(uuid.uuid4()),
-            guest_name=guest_name,
-            phone_number=phone_number,
-            party_size=party_size,
-            seating_category=seating_category,
-            notes=notes,
-            state=PartyState.WAITING,
-            created_at=_now(),
-        )
-        self.parties[party.id] = party
-        guest_token = secrets.token_urlsafe(32)
-        self.guest_tokens[guest_token] = party.id
-        self._update_peak()
-        return party, guest_token
+        with db.SessionLocal() as session:
+            row = WaitlistPartyRow(
+                id=str(uuid.uuid4()),
+                guest_name=guest_name,
+                phone_number=phone_number,
+                party_size=party_size,
+                seating_category=seating_category,
+                notes=notes,
+                state=PartyState.WAITING,
+                created_at=_now(),
+            )
+            session.add(row)
+            session.flush()
+
+            guest_token = secrets.token_urlsafe(32)
+            session.add(GuestTokenRow(token=guest_token, party_id=row.id))
+
+            self._update_peak(session)
+            session.commit()
+            return _party_from_row(row), guest_token
 
     def list_active_parties(self) -> list[WaitlistParty]:
-        return sorted(self.parties.values(), key=lambda p: p.created_at)
+        with db.SessionLocal() as session:
+            rows = session.scalars(select(WaitlistPartyRow).order_by(WaitlistPartyRow.created_at)).all()
+            return [_party_from_row(row) for row in rows]
 
     def get_party(self, party_id: str) -> WaitlistParty | None:
-        return self.parties.get(party_id)
+        with db.SessionLocal() as session:
+            row = session.get(WaitlistPartyRow, party_id)
+            return _party_from_row(row) if row else None
 
-    def _is_guest_token_expired(self, party: WaitlistParty) -> bool:
+    def _is_guest_token_expired(self, row: WaitlistPartyRow) -> bool:
         now = _now()
-        if party.state == PartyState.WAITING:
-            return now - party.created_at > WAITING_HARD_LIMIT
-        if party.resolved_at is not None:
-            return now - party.resolved_at > RESOLVED_EXPIRY
+        if row.state == PartyState.WAITING:
+            return now - _as_utc(row.created_at) > WAITING_HARD_LIMIT
+        resolved_at = _as_utc(row.resolved_at)
+        if resolved_at is not None:
+            return now - resolved_at > RESOLVED_EXPIRY
         return False
 
     def get_party_by_guest_token(self, token: str) -> WaitlistParty | None:
-        party_id = self.guest_tokens.get(token)
-        if party_id is None:
-            return None
-        party = self.parties.get(party_id)
-        if party is None or self._is_guest_token_expired(party):
-            return None
-        return party
+        with db.SessionLocal() as session:
+            token_row = session.get(GuestTokenRow, token)
+            if token_row is None:
+                return None
+            party_row = session.get(WaitlistPartyRow, token_row.party_id)
+            if party_row is None or self._is_guest_token_expired(party_row):
+                return None
+            return _party_from_row(party_row)
 
     def waiting_parties_ordered(self) -> list[WaitlistParty]:
-        return sorted(
-            (p for p in self.parties.values() if p.state == PartyState.WAITING),
-            key=lambda p: p.created_at,
-        )
+        with db.SessionLocal() as session:
+            rows = session.scalars(
+                select(WaitlistPartyRow)
+                .where(WaitlistPartyRow.state == PartyState.WAITING)
+                .order_by(WaitlistPartyRow.created_at)
+            ).all()
+            return [_party_from_row(row) for row in rows]
 
     def position_of(self, party_id: str) -> int | None:
-        party = self.parties.get(party_id)
-        if party is None or party.state != PartyState.WAITING:
-            return None
-        for index, p in enumerate(self.waiting_parties_ordered()):
-            if p.id == party_id:
+        for index, party in enumerate(self.waiting_parties_ordered()):
+            if party.id == party_id:
                 return index + 1
         return None
 
     def update_party_state(self, party_id: str, action: PartyAction) -> WaitlistParty:
-        party = self.parties.get(party_id)
-        if party is None:
-            raise PartyNotFoundError(party_id)
-        allowed = TRANSITIONS.get(party.state, {})
-        new_state = allowed.get(action)
-        if new_state is None:
-            raise InvalidTransitionError(party.state, action.value)
+        with db.SessionLocal() as session:
+            row = session.get(WaitlistPartyRow, party_id)
+            if row is None:
+                raise PartyNotFoundError(party_id)
 
-        now = _now()
-        updates: dict = {"state": new_state}
-        if action in (PartyAction.NOTIFY, PartyAction.RE_NOTIFY):
-            updates["notified_at"] = now
-        if new_state in (PartyState.SEATED, PartyState.NO_SHOW):
-            updates["resolved_at"] = now
-        if action == PartyAction.UN_SEAT:
-            updates["resolved_at"] = None
+            allowed = TRANSITIONS.get(row.state, {})
+            new_state = allowed.get(action)
+            if new_state is None:
+                raise InvalidTransitionError(row.state, action.value)
 
-        party = party.model_copy(update=updates)
-        self.parties[party_id] = party
-        self._update_peak()
-        return party
+            now = _now()
+            row.state = new_state
+            if action in (PartyAction.NOTIFY, PartyAction.RE_NOTIFY):
+                row.notified_at = now
+            if new_state in (PartyState.SEATED, PartyState.NO_SHOW):
+                row.resolved_at = now
+            if action == PartyAction.UN_SEAT:
+                row.resolved_at = None
+
+            self._update_peak(session)
+            session.commit()
+            return _party_from_row(row)
 
     def cancel_party(self, party_id: str) -> WaitlistParty:
-        party = self.parties.get(party_id)
-        if party is None:
-            raise PartyNotFoundError(party_id)
-        if party.state not in (PartyState.WAITING, PartyState.NOTIFIED):
-            raise InvalidTransitionError(party.state, "CANCEL")
-        party = party.model_copy(update={"state": PartyState.CANCELLED, "resolved_at": _now()})
-        self.parties[party_id] = party
-        self._update_peak()
-        return party
+        with db.SessionLocal() as session:
+            row = session.get(WaitlistPartyRow, party_id)
+            if row is None:
+                raise PartyNotFoundError(party_id)
+            if row.state not in (PartyState.WAITING, PartyState.NOTIFIED):
+                raise InvalidTransitionError(row.state, "CANCEL")
+
+            row.state = PartyState.CANCELLED
+            row.resolved_at = _now()
+            session.commit()
+            return _party_from_row(row)
 
     def save_push_subscription(self, party_id: str, subscription: dict) -> None:
-        self.push_subscriptions[party_id] = subscription
-        party = self.parties[party_id]
-        self.parties[party_id] = party.model_copy(update={"push_subscribed": True})
+        with db.SessionLocal() as session:
+            party_row = session.get(WaitlistPartyRow, party_id)
+            if party_row is None:
+                raise PartyNotFoundError(party_id)
+
+            existing = session.get(PushSubscriptionRow, party_id)
+            if existing is None:
+                session.add(PushSubscriptionRow(party_id=party_id, subscription=subscription))
+            else:
+                existing.subscription = subscription
+
+            party_row.push_subscribed = True
+            session.commit()
 
     # -- metrics ---------------------------------------------------------
 
-    def _update_peak(self) -> None:
-        active_waiting = sum(1 for p in self.parties.values() if p.state == PartyState.WAITING)
-        self.peak_hourly_volume = max(self.peak_hourly_volume, active_waiting)
+    def _count_waiting(self, session: Session) -> int:
+        return (
+            session.scalar(
+                select(func.count())
+                .select_from(WaitlistPartyRow)
+                .where(WaitlistPartyRow.state == PartyState.WAITING)
+            )
+            or 0
+        )
+
+    def _update_peak(self, session: Session) -> None:
+        active_waiting = self._count_waiting(session)
+        metrics_row = session.get(ShiftMetricsRow, 1)
+        if metrics_row is None:
+            session.add(ShiftMetricsRow(id=1, peak_hourly_volume=active_waiting))
+        else:
+            metrics_row.peak_hourly_volume = max(metrics_row.peak_hourly_volume, active_waiting)
 
     def metrics(self) -> QueueMetrics:
-        active_waiting = sum(1 for p in self.parties.values() if p.state == PartyState.WAITING)
-        return QueueMetrics(active_waiting=active_waiting, peak_hourly_volume=self.peak_hourly_volume)
+        with db.SessionLocal() as session:
+            active_waiting = self._count_waiting(session)
+            metrics_row = session.get(ShiftMetricsRow, 1)
+            peak = metrics_row.peak_hourly_volume if metrics_row is not None else active_waiting
+            return QueueMetrics(active_waiting=active_waiting, peak_hourly_volume=peak)
 
     # -- seed data ---------------------------------------------------------
 
-    def _seed(self) -> None:
-        self.create_host("host@waitlist.test", "host1234")
+    def _seed(self, session: Session) -> None:
+        self._insert_host(session, "host@waitlist.test", "host1234")
 
         now = _now()
 
@@ -226,7 +329,7 @@ class Store:
             resolved_minutes_ago: int | None = None,
             notes: str | None = None,
         ) -> None:
-            party = WaitlistParty(
+            row = WaitlistPartyRow(
                 id=str(uuid.uuid4()),
                 guest_name=guest_name,
                 phone_number=phone_number,
@@ -238,8 +341,9 @@ class Store:
                 notified_at=now - timedelta(minutes=notified_minutes_ago) if notified_minutes_ago is not None else None,
                 resolved_at=now - timedelta(minutes=resolved_minutes_ago) if resolved_minutes_ago is not None else None,
             )
-            self.parties[party.id] = party
-            self.guest_tokens[secrets.token_urlsafe(32)] = party.id
+            session.add(row)
+            session.flush()
+            session.add(GuestTokenRow(token=secrets.token_urlsafe(32), party_id=row.id))
 
         seeded("Maria Lopez", "+1-555-0101", 2, "Indoor", PartyState.WAITING, created_minutes_ago=18)
         seeded("James Carter", "+1-555-0102", 4, "Outdoor", PartyState.WAITING, created_minutes_ago=12)
@@ -264,7 +368,7 @@ class Store:
         )
         seeded("Ana Silva", "+1-555-0105", 2, "Indoor", PartyState.WAITING, created_minutes_ago=5, notes="Birthday")
 
-        self._update_peak()
+        self._update_peak(session)
 
 
 store = Store()

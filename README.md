@@ -22,9 +22,15 @@ make install   # first time only: creates .venv, installs dependencies
 make run       # starts the API on http://localhost:8000, with auto-reload
 ```
 
-The backend uses an in-memory store, seeded with a demo host account
-(`host@waitlist.test` / `host1234`) and a few sample waitlist parties.
-Restarting it resets all data.
+The backend stores data in SQLite (`backend/waitlist.db` by default) via
+SQLAlchemy. On first run it seeds a demo host account
+(`host@waitlist.test` / `host1234`) and a few sample waitlist parties;
+data then persists across restarts. To point it at a different database
+(e.g. Postgres once that's supported), set `DATABASE_URL`:
+
+```bash
+DATABASE_URL="sqlite:///./somewhere-else.db" make run
+```
 
 ### Frontend (Vite + React, `frontend/`)
 

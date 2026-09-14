@@ -30,12 +30,17 @@ Frontend (from `frontend/`):
 
 Rules
 
-- The backend's store (`app/store.py`) is a single in-process Python object
-  holding plain dicts - there is no database. Restarting the backend wipes
-  every party and session back to the seed data. Don't add persistence
-  without being asked; the mock-then-real workflow this project follows
-  treats "real backend, in-memory data" as its own deliberate stage before
-  "real backend, real persistence."
+- The backend persists to a real database via SQLAlchemy, pointed at by the
+  `DATABASE_URL` env var (default `sqlite:///./waitlist.db`, a file in
+  `backend/`). Data survives restarts; seeding only happens once, on an
+  empty database (`Store.__init__`), so don't assume a clean slate on every
+  boot the way `store.reset()` (test-only) still gives you.
+- Code in `app/store.py` and `app/db_models.py` must stay dialect-agnostic:
+  no SQLite-specific SQL or types outside `app/db.py`'s `_create_engine`
+  (which isolates the `check_same_thread`/`StaticPool` handling
+  `sqlite:///:memory:` needs). Postgres support is a planned follow-up via
+  `DATABASE_URL` alone - don't add a Postgres driver dependency until
+  that's actually asked for.
 - No WebSocket gateway is implemented. `openapi.yml`'s `info.description`
   documents a `wss://.../waitlist/ws` channel, but that's out of scope for
   "implements the OpenAPI spec" - the spec itself only defines REST paths.
@@ -83,6 +88,24 @@ Architecture
   party's (`SEATED`/`CANCELLED`/`NO_SHOW`) expires 2h after `resolvedAt`
   (`Store._is_guest_token_expired`, spec section 13). There's no cleanup
   sweep - an expired token just starts failing lookups.
+- **`Store` (`app/store.py`) opens one DB session per method call**
+  (`with db.SessionLocal() as session:`), commits, and converts ORM rows to
+  plain Pydantic/dataclass values *before* the session closes - there's no
+  FastAPI `Depends(get_db)` request-scoped session. This keeps every router
+  and `app/auth.py` call site unchanged from the in-memory version; it's a
+  deliberate simplicity trade-off for an app this size; introduce a
+  per-request session only if a route needs several store calls to share
+  one transaction.
+- **Peak queue depth is its own table** (`ShiftMetricsRow`, one row,
+  id=1), not derived from current party states - a party that contributed
+  to the historical peak may have since moved to a different state, so the
+  peak has to be persisted as a running counter (`Store._update_peak`,
+  called after every mutation that could raise it).
+- **Datetimes round-trip through SQLite as naive**, even though the code
+  only ever writes `datetime.now(timezone.utc)`. `Store._as_utc` reattaches
+  UTC tzinfo on every read (`_party_from_row`, guest-token expiry checks) -
+  it's a no-op on dialects (e.g. Postgres) that preserve tzinfo natively, so
+  don't remove it when adding another backend.
 - **`app/auth.py` imports `app.store` lazily**, inside each dependency
   function body rather than at module level. `store.py` imports `auth.py`'s
   password-hashing functions at module level; a top-level import the other
@@ -109,8 +132,11 @@ Architecture
   `VITE_API_BASE_URL` (see `.env.example`) points `RestWaitlistService` at
   the backend, defaulting to `http://localhost:8000/v1`.
 - **Tests**: backend tests live in `backend/tests/` (pytest + FastAPI's
-  `TestClient`); the `client` fixture in `conftest.py` calls `store.reset()`
-  before every test so state doesn't leak between them. Frontend service
+  `TestClient`). `conftest.py` sets `DATABASE_URL=sqlite:///:memory:`
+  *before* importing `app.main` (env var is read once, at `app/db.py`
+  import time) so tests never touch the dev database file; the `client`
+  fixture's `store.reset()` then drops and recreates every table before
+  each test so state doesn't leak between them. Frontend service
   tests live in `src/services/__tests__/`, one file per implementation
   (`mockWaitlistService.test.ts`, `restWaitlistService.test.ts`); the REST
   one mocks `fetch` directly with `vi.stubGlobal` since no MSW or similar
