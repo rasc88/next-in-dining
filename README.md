@@ -1,4 +1,4 @@
-# Restaurant Waitlist Manager(Next in Dining Application)
+# Next in Dining Application
 
 A real-time queue management app for single-location restaurants. Hosts manage
 walk-in parties from a queue board; guests join via a public form and track
