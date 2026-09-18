@@ -93,3 +93,22 @@ run it explicitly with:
 ```bash
 cd backend && make test-integration
 ```
+
+`e2e/` is a separate [Playwright](https://playwright.dev) suite that also
+drives the `docker-compose.yaml` stack, but through a real browser instead
+of HTTP calls: a host signs in in one browser session while a guest joins
+the waitlist from a separate one, and the test confirms the host's queue
+board picks up the new party live (via the existing 3s poll), without a
+page reload. First time only, install its dependencies and browser:
+
+```bash
+cd e2e
+npm install
+npx playwright install --with-deps chromium
+```
+
+Then run it (builds and tears down the Docker stack automatically):
+
+```bash
+cd e2e && npm test
+```
