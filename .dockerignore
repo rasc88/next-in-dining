@@ -1,0 +1,10 @@
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.egg-info
+**/.git
+**/dist
+backend/waitlist.db
+frontend/.env
