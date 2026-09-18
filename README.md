@@ -83,3 +83,13 @@ frontend and backend ever run on different origins, rebuild with
 cd backend && make test
 cd frontend && npm test
 ```
+
+`backend/tests/integration/` runs the app against a real
+[docker-compose.yaml](docker-compose.yaml) stack (build, Postgres,
+static-frontend serving) instead of the in-memory SQLite used by
+`make test`. It's excluded from the default run since it needs Docker;
+run it explicitly with:
+
+```bash
+cd backend && make test-integration
+```

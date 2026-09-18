@@ -6,13 +6,14 @@ PYTEST := $(VENV)/bin/pytest
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install run test clean
+.PHONY: help install run test test-integration clean
 
 help:
-	@echo "make install  - create the virtualenv and install dependencies"
-	@echo "make run      - start the API with auto-reload on http://localhost:8000"
-	@echo "make test     - run the test suite"
-	@echo "make clean    - remove the virtualenv and cached files"
+	@echo "make install          - create the virtualenv and install dependencies"
+	@echo "make run              - start the API with auto-reload on http://localhost:8000"
+	@echo "make test             - run the test suite"
+	@echo "make test-integration - run the docker-compose integration suite (requires Docker)"
+	@echo "make clean            - remove the virtualenv and cached files"
 
 $(PYTHON):
 	python3 -m venv $(VENV)
@@ -26,6 +27,9 @@ run: $(PYTHON)
 
 test: $(PYTHON)
 	$(PYTEST)
+
+test-integration: $(PYTHON)
+	$(PYTEST) -m integration tests/integration
 
 clean:
 	rm -rf $(VENV) .pytest_cache waitlist_backend.egg-info

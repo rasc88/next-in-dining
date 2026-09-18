@@ -142,4 +142,8 @@ Architecture
   tests live in `src/services/__tests__/`, one file per implementation
   (`mockWaitlistService.test.ts`, `restWaitlistService.test.ts`); the REST
   one mocks `fetch` directly with `vi.stubGlobal` since no MSW or similar
-  is set up in this project.
+  is set up in this project. `backend/tests/integration/` is a separate
+  suite, marked `integration` and excluded from `make test`'s default
+  `addopts` (`pyproject.toml`) since it drives `docker-compose.yaml` with
+  real subprocess calls and hits the running stack over HTTP with `httpx`
+  instead of `TestClient` - run it with `make test-integration`.
