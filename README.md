@@ -77,6 +77,27 @@ so this works regardless of what host/port you expose it on. Only if
 frontend and backend ever run on different origins, rebuild with
 `--build-arg VITE_API_BASE_URL=https://api.example.com/v1`.
 
+## Deploying to Render
+
+[render.yaml](render.yaml) is a [Render](https://render.com) Blueprint that
+provisions a web service (built from the same [Dockerfile](Dockerfile)) and
+a managed Postgres database, wired together over `DATABASE_URL`. Render
+doesn't run `docker-compose.yaml` directly - that's for local dev - the
+Blueprint is its cloud equivalent.
+
+1. Push this repo (with `render.yaml`) to GitHub.
+2. In the Render dashboard: **New +** → **Blueprint**, connect the repo,
+   pick the `main` branch.
+3. Render reads `render.yaml` and shows the plan - one web service, one
+   Postgres. Review it and click **Apply**.
+4. Once the build finishes, Render gives a public URL that serves both the
+   frontend and the API at `/v1` (same origin, so no `VITE_API_BASE_URL`
+   override is needed).
+
+On the free plan, the web service sleeps after 15 minutes idle (the next
+request takes ~30-50s to wake it), and the free Postgres instance expires
+after 30 days.
+
 ## Tests
 
 ```bash
