@@ -1,0 +1,18 @@
+databases:
+  - name: next-in-dining-db
+    plan: free
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: next-in-dining
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: next-in-dining-db
+          property: connectionString
