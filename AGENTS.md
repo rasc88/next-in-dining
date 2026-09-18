@@ -38,9 +38,11 @@ Rules
 - Code in `app/store.py` and `app/db_models.py` must stay dialect-agnostic:
   no SQLite-specific SQL or types outside `app/db.py`'s `_create_engine`
   (which isolates the `check_same_thread`/`StaticPool` handling
-  `sqlite:///:memory:` needs). Postgres support is a planned follow-up via
-  `DATABASE_URL` alone - don't add a Postgres driver dependency until
-  that's actually asked for.
+  `sqlite:///:memory:` needs). Postgres is supported via `DATABASE_URL`
+  alone (e.g. `postgresql://user:pass@host:5432/dbname`) - `_create_engine`
+  already routes any non-SQLite URL through a plain `create_engine(url)`,
+  so no code change was needed, only the `psycopg2-binary` driver
+  dependency in `pyproject.toml`.
 - No WebSocket gateway is implemented. `openapi.yml`'s `info.description`
   documents a `wss://.../waitlist/ws` channel, but that's out of scope for
   "implements the OpenAPI spec" - the spec itself only defines REST paths.
