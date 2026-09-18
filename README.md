@@ -60,24 +60,16 @@ Open `http://localhost:8000` - the API is at `http://localhost:8000/v1`.
 
 By default the database lives inside the container and is lost when it's
 removed. Set `DATABASE_URL` (same as running locally) to point it at a
-mounted SQLite file or a Postgres server instead. For Postgres, put both
-containers on the same Docker network so they can reach each other by name:
+mounted SQLite file or a Postgres server instead.
+
+### With Postgres, via Docker Compose
+
+[docker-compose.yaml](docker-compose.yaml) runs the app alongside a
+Postgres container, wired together over `DATABASE_URL` with the data
+persisted in a volume:
 
 ```bash
-docker network create next-in-dining-net
-
-docker run -d --name next-in-dining-db \
-  --network next-in-dining-net \
-  -e POSTGRES_USER=nid \
-  -e POSTGRES_PASSWORD=nid \
-  -e POSTGRES_DB=nid \
-  -v next-in-dining-pgdata:/var/lib/postgresql/data \
-  postgres:16-alpine
-
-docker run --rm -p 8000:8000 \
-  --network next-in-dining-net \
-  -e DATABASE_URL=postgresql://nid:nid@next-in-dining-db:5432/nid \
-  --name next-in-dining next-in-dining:latest
+docker compose up --build
 ```
 
 The frontend is built to call the backend at a relative `/v1` (same origin),
