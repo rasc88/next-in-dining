@@ -135,6 +135,12 @@ Architecture
   the mock's own tests and any future component tests should) to swap it.
   `VITE_API_BASE_URL` (see `.env.example`) points `RestWaitlistService` at
   the backend, defaulting to `http://localhost:8000/v1`.
+- **Telemetry (`app/telemetry.py`)**: `setup_telemetry()` returns early
+  unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so tests and local runs
+  never instrument or export anything. It owns `APP_ENV`/`APP_VERSION`
+  (also served by `/health`); `APP_VERSION` is the image tag CI bakes in
+  via the Dockerfile's build arg. `/health` is excluded from tracing
+  because Render polls it constantly.
 - **Tests**: backend tests live in `backend/tests/` (pytest + FastAPI's
   `TestClient`). `conftest.py` sets `DATABASE_URL=sqlite:///:memory:`
   *before* importing `app.main` (env var is read once, at `app/db.py`

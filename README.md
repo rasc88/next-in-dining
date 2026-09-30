@@ -155,6 +155,26 @@ yourself as a **Required reviewer**, and keep the
 `RENDER_PROD_DEPLOY_HOOK_URL` secret there so only an approved job can
 deploy to production.
 
+## Telemetry (OpenTelemetry)
+
+[backend/app/telemetry.py](backend/app/telemetry.py) instruments the
+backend with OpenTelemetry: traces for every request (FastAPI) and query
+(SQLAlchemy), metrics, and logs (including uvicorn's error and access
+logs), all exported over OTLP/HTTP. Every signal carries the service name
+(`next-in-dining`), environment (`deployment.environment`, from
+`APP_ENV`) and deployed version (`service.version`, from `APP_VERSION`).
+
+It's off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so `make run`,
+tests and docker-compose export nothing. To turn it on, set:
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT` - the collector or backend's OTLP/HTTP
+  base URL (e.g. `http://localhost:4318`).
+- `OTEL_EXPORTER_OTLP_HEADERS` - only if the backend needs auth, e.g.
+  `Authorization=Basic <base64 token>`.
+
+On Render both are declared in `render.yaml` with `sync: false` and set per
+service in the dashboard.
+
 ## Tests
 
 ```bash

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -13,9 +12,7 @@ from sqlalchemy import text
 from app.db import engine
 from app.routers import auth, waitlist
 from app.store import StoreError
-
-APP_ENV = os.environ.get("APP_ENV", "local")
-APP_VERSION = os.environ.get("APP_VERSION", "dev")
+from app.telemetry import APP_ENV, APP_VERSION, setup_telemetry
 
 app = FastAPI(title="Restaurant Waitlist Manager API", version="1.0.0")
 
@@ -28,6 +25,8 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/v1")
 app.include_router(waitlist.router, prefix="/v1")
+
+setup_telemetry(app, engine)
 
 
 @app.get("/health", include_in_schema=False)
