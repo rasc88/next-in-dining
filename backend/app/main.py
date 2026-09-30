@@ -15,8 +15,7 @@ from app.routers import auth, waitlist
 from app.store import StoreError
 
 APP_ENV = os.environ.get("APP_ENV", "local")
-# RENDER_GIT_COMMIT is set by Render on git-backed services.
-APP_VERSION = os.environ.get("APP_VERSION") or os.environ.get("RENDER_GIT_COMMIT", "dev")
+APP_VERSION = os.environ.get("APP_VERSION", "dev")
 
 app = FastAPI(title="Restaurant Waitlist Manager API", version="1.0.0")
 

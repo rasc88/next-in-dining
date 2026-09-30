@@ -80,8 +80,10 @@ frontend and backend ever run on different origins, rebuild with
 ## Deploying to Render
 
 [render.yaml](render.yaml) is a [Render](https://render.com) Blueprint that
-provisions two copies of the app, both built from the same
-[Dockerfile](Dockerfile):
+provisions two copies of the app, both running the same
+[Dockerfile](Dockerfile) image - built once by CI and pulled from GitHub
+Container Registry (`ghcr.io/rasc88/next-in-dining`), never built by
+Render itself:
 
 - `next-in-dining` - **production**, backed by a managed Postgres database
   over `DATABASE_URL`.
@@ -93,12 +95,15 @@ provisions two copies of the app, both built from the same
 Render doesn't run `docker-compose.yaml` directly - that's for local dev -
 the Blueprint is its cloud equivalent.
 
-1. Push this repo (with `render.yaml`) to GitHub.
+1. Push this repo (with `render.yaml`) to GitHub and let CI publish the
+   first image. Then make the package public (GitHub → Packages →
+   `next-in-dining` → Package settings → Change visibility) so Render can
+   pull it without registry credentials.
 2. In the Render dashboard: **New +** → **Blueprint**, connect the repo,
    pick the `main` branch.
 3. Render reads `render.yaml` and shows the plan - two web services, one
    Postgres. Review it and click **Apply**.
-4. Once the build finishes, Render gives a public URL that serves both the
+4. Once the deploy finishes, Render gives a public URL that serves both the
    frontend and the API at `/v1` (same origin, so no `VITE_API_BASE_URL`
    override is needed).
 
@@ -111,9 +116,17 @@ after 30 days.
 [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push
 and pull request: backend and frontend tests in parallel, then the
 docker-compose-based integration and e2e suites, and - only on a push to
-`main`, once everything else passed - deploys to **dev** and polls dev's
-`/health` until it reports the pushed commit as its `version`. Production
-is never deployed by a push.
+`main`, once everything else passed:
+
+1. **build** - builds the image once, with its tag baked in as
+   `APP_VERSION`, and pushes it to `ghcr.io/rasc88/next-in-dining` tagged
+   `YYYYMMDD-HHMMSS-shortsha` (e.g. `20260818-163457-83242da`) and
+   `latest`.
+2. **deploy-dev** - tells Render to deploy that exact tag to **dev**
+   (deploy hook with `&imgURL=<image:tag>`) and polls dev's `/health`
+   until it reports the tag as its `version`.
+
+Production is never deployed by a push.
 
 `render.yaml` sets `autoDeploy: false`, so Render *only* deploys when this
 pipeline tells it to - a push alone no longer triggers one. That requires
@@ -130,11 +143,12 @@ each taken from the matching service in the Render dashboard:
 [.github/workflows/promote.yml](.github/workflows/promote.yml) is the only
 way production changes. Run it by hand from Actions → **Promote to
 production** → Run workflow, tick the confirmation checkbox, and
-optionally give a commit SHA (by default it promotes whatever dev's
-`/health` reports as its `version`). It checks the commit is on `main`,
-waits for approval on the `production` environment, deploys exactly that
-commit to production (Render's deploy hook with `&ref=<sha>`), and polls
-production's `/health` until it reports that version.
+optionally give an image tag (by default it promotes whatever dev's
+`/health` reports as its `version`). It checks the tag exists in the
+registry, waits for approval on the `production` environment, deploys
+that same image to production - no rebuild, so production runs exactly
+the bytes dev was validated on - and polls production's `/health` until
+it reports that tag.
 
 One-time setup in Settings → Environments: create `production` with
 yourself as a **Required reviewer**, and keep the
@@ -149,8 +163,8 @@ cd frontend && npm test
 ```
 
 `GET /health` (a trivial DB round-trip, separate from `/`) returns the
-`environment` (`APP_ENV`) and deployed `version` (`APP_VERSION`, else
-Render's `RENDER_GIT_COMMIT`). It's what
+`environment` (`APP_ENV`) and deployed `version` (`APP_VERSION`, the
+image tag CI baked in; `dev` for local builds). It's what
 Render's health check and the CI pipeline poll after a deploy; it's
 covered by `backend/tests/test_health.py`.
 

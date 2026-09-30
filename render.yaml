@@ -4,12 +4,15 @@ databases:
     postgresMajorVersion: "16"
 
 services:
+  # Both services run images built once by CI (.github/workflows/ci.yml);
+  # deploys pick the exact tag through the deploy hook's imgURL parameter.
+
   # Production: promoted manually from dev, backed by the managed Postgres.
   - type: web
     name: next-in-dining
-    env: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
+    runtime: image
+    image:
+      url: ghcr.io/rasc88/next-in-dining:latest
     plan: free
     healthCheckPath: /health
     autoDeploy: false
@@ -26,9 +29,9 @@ services:
   # which is recreated (and re-seeded) on every deploy.
   - type: web
     name: next-in-dining-dev
-    env: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
+    runtime: image
+    image:
+      url: ghcr.io/rasc88/next-in-dining:latest
     plan: free
     healthCheckPath: /health
     autoDeploy: false

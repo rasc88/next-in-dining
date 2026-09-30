@@ -7,44 +7,49 @@ on:
         description: "I confirm promoting this release to production"
         type: boolean
         default: false
-      version:
-        description: "Commit SHA to promote (leave empty for the one dev is serving)"
+      tag:
+        description: "Image tag to promote, e.g. 20260818-163457-83242da (leave empty for the one dev is serving)"
         type: string
         required: false
 
 concurrency: production
 
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
 jobs:
   resolve:
     runs-on: ubuntu-latest
+    permissions:
+      packages: read
     outputs:
-      sha: ${{ steps.version.outputs.sha }}
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - name: Require confirmation
         if: ${{ !inputs.confirm }}
         run: |
           echo "::error::Tick the confirmation checkbox to promote to production"
           exit 1
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Resolve the version to promote
-        id: version
+      - name: Resolve the image tag to promote
+        id: tag
         env:
-          REQUESTED: ${{ inputs.version }}
+          REQUESTED: ${{ inputs.tag }}
         run: |
-          version="$REQUESTED"
-          if [ -z "$version" ]; then
-            version=$(curl -sf --retry 5 --retry-delay 15 --retry-all-errors "${{ vars.RENDER_DEV_URL }}/health" | jq -r .version)
-            echo "Dev is serving $version"
+          tag="$REQUESTED"
+          if [ -z "$tag" ]; then
+            tag=$(curl -sf --retry 5 --retry-delay 15 --retry-all-errors "${{ vars.RENDER_DEV_URL }}/health" | jq -r .version)
+            echo "Dev is serving $tag"
           fi
-          sha=$(git rev-parse --verify "$version^{commit}")
-          if ! git merge-base --is-ancestor "$sha" origin/main; then
-            echo "::error::$sha is not on main"
-            exit 1
-          fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Promoting $sha: $(git log -1 --format=%s "$sha")" >> "$GITHUB_STEP_SUMMARY"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check the image exists in the registry
+        run: |
+          docker manifest inspect "$IMAGE:${{ steps.tag.outputs.tag }}" > /dev/null
+          echo "Promoting \`$IMAGE:${{ steps.tag.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
 
   promote:
     needs: [resolve]
@@ -53,19 +58,23 @@ jobs:
     environment:
       name: production
       url: ${{ vars.RENDER_PROD_URL }}
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
     steps:
-      - name: Trigger Render deploy of that commit to production
-        run: curl -sf -X POST "${{ secrets.RENDER_PROD_DEPLOY_HOOK_URL }}&ref=${{ needs.resolve.outputs.sha }}"
+      - name: Trigger Render deploy of the same image to production
+        run: |
+          img_url=$(jq -rn --arg v "$IMAGE:$TAG" '$v | @uri')
+          curl -sf -X POST "${{ secrets.RENDER_PROD_DEPLOY_HOOK_URL }}&imgURL=$img_url"
       - name: Wait for production to serve it
         run: |
           for i in $(seq 1 40); do
             version=$(curl -sf "${{ vars.RENDER_PROD_URL }}/health" | jq -r .version || true)
-            if [ "$version" = "${{ needs.resolve.outputs.sha }}" ]; then
-              echo "Production is healthy and serving ${{ needs.resolve.outputs.sha }}"
+            if [ "$version" = "$TAG" ]; then
+              echo "Production is healthy and serving $TAG"
               exit 0
             fi
             echo "Production serves '${version:-nothing}' (attempt $i/40), retrying in 15s..."
             sleep 15
           done
-          echo "::error::Production never started serving ${{ needs.resolve.outputs.sha }}"
+          echo "::error::Production never started serving $TAG"
           exit 1
