@@ -42,7 +42,9 @@ Rules
   alone (e.g. `postgresql://user:pass@host:5432/dbname`) - `_create_engine`
   already routes any non-SQLite URL through a plain `create_engine(url)`,
   so no code change was needed, only the `psycopg2-binary` driver
-  dependency in `pyproject.toml`.
+  dependency in `pyproject.toml`. SQLAlchemy is pinned `<2.1` because 2.1
+  switched the default `postgresql://` driver to psycopg 3, which isn't
+  installed - unpin only together with swapping the driver.
 - No WebSocket gateway is implemented. `openapi.yml`'s `info.description`
   documents a `wss://.../waitlist/ws` channel, but that's out of scope for
   "implements the OpenAPI spec" - the spec itself only defines REST paths.
