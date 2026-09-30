@@ -98,12 +98,33 @@ On the free plan, the web service sleeps after 15 minutes idle (the next
 request takes ~30-50s to wake it), and the free Postgres instance expires
 after 30 days.
 
+### Continuous deployment (GitHub Actions)
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push
+and pull request: backend and frontend tests in parallel, then the
+docker-compose-based integration and e2e suites, and - only on a push to
+`main`, once everything else passed - triggers a Render deploy and polls
+`/health` until it comes back healthy.
+
+`render.yaml` sets `autoDeploy: false`, so Render *only* deploys when this
+pipeline tells it to - a push alone no longer triggers one. That requires
+two repo settings (Settings → Secrets and variables → Actions):
+
+- Secret `RENDER_DEPLOY_HOOK_URL` - from the Render dashboard, the
+  `next-in-dining` service's Settings → Deploy Hook.
+- Variable `RENDER_APP_URL` - the service's public URL (e.g.
+  `https://next-in-dining.onrender.com`), used to poll `/health`.
+
 ## Tests
 
 ```bash
 cd backend && make test
 cd frontend && npm test
 ```
+
+`GET /health` (a trivial DB round-trip, separate from `/`) is what
+Render's health check and the CI pipeline poll after a deploy; it's
+covered by `backend/tests/test_health.py`.
 
 `backend/tests/integration/` runs the app against a real
 [docker-compose.yaml](docker-compose.yaml) stack (build, Postgres,

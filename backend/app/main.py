@@ -7,7 +7,9 @@ from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 
+from app.db import engine
 from app.routers import auth, waitlist
 from app.store import StoreError
 
@@ -22,6 +24,14 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/v1")
 app.include_router(waitlist.router, prefix="/v1")
+
+
+@app.get("/health", include_in_schema=False)
+def health() -> dict[str, str]:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    return {"status": "ok"}
+
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
