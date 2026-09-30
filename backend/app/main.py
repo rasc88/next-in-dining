@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -12,6 +13,10 @@ from sqlalchemy import text
 from app.db import engine
 from app.routers import auth, waitlist
 from app.store import StoreError
+
+APP_ENV = os.environ.get("APP_ENV", "local")
+# RENDER_GIT_COMMIT is set by Render on git-backed services.
+APP_VERSION = os.environ.get("APP_VERSION") or os.environ.get("RENDER_GIT_COMMIT", "dev")
 
 app = FastAPI(title="Restaurant Waitlist Manager API", version="1.0.0")
 
@@ -30,7 +35,7 @@ app.include_router(waitlist.router, prefix="/v1")
 def health() -> dict[str, str]:
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
-    return {"status": "ok"}
+    return {"status": "ok", "environment": APP_ENV, "version": APP_VERSION}
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"

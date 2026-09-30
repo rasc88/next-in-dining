@@ -61,23 +61,24 @@ jobs:
           npx playwright install --with-deps chromium
           npm test
 
-  deploy:
+  deploy-dev:
     needs: [compose-suite]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Trigger Render deploy
-        run: curl -sf -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
-      - name: Wait for the new deploy to become healthy
+      - name: Trigger Render deploy to dev
+        run: curl -sf -X POST "${{ secrets.RENDER_DEV_DEPLOY_HOOK_URL }}"
+      - name: Wait for dev to serve this commit
         run: |
           for i in $(seq 1 40); do
-            if curl -sf "${{ vars.RENDER_APP_URL }}/health"; then
-              echo "Healthy"
+            version=$(curl -sf "${{ vars.RENDER_DEV_URL }}/health" | jq -r .version || true)
+            if [ "$version" = "${{ github.sha }}" ]; then
+              echo "Dev is healthy and serving ${{ github.sha }}"
               exit 0
             fi
-            echo "Not ready yet (attempt $i/40), retrying in 15s..."
+            echo "Dev serves '${version:-nothing}' (attempt $i/40), retrying in 15s..."
             sleep 15
           done
-          echo "::error::Health check never succeeded after deploy"
+          echo "::error::Dev never started serving ${{ github.sha }}"
           exit 1

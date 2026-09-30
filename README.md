@@ -80,15 +80,23 @@ frontend and backend ever run on different origins, rebuild with
 ## Deploying to Render
 
 [render.yaml](render.yaml) is a [Render](https://render.com) Blueprint that
-provisions a web service (built from the same [Dockerfile](Dockerfile)) and
-a managed Postgres database, wired together over `DATABASE_URL`. Render
-doesn't run `docker-compose.yaml` directly - that's for local dev - the
-Blueprint is its cloud equivalent.
+provisions two copies of the app, both built from the same
+[Dockerfile](Dockerfile):
+
+- `next-in-dining` - **production**, backed by a managed Postgres database
+  over `DATABASE_URL`.
+- `next-in-dining-dev` - **development**, where every push to `main` lands
+  first. Render's free plan allows a single free Postgres, so dev runs on
+  the default SQLite file, which is recreated (and re-seeded) on every
+  deploy.
+
+Render doesn't run `docker-compose.yaml` directly - that's for local dev -
+the Blueprint is its cloud equivalent.
 
 1. Push this repo (with `render.yaml`) to GitHub.
 2. In the Render dashboard: **New +** → **Blueprint**, connect the repo,
    pick the `main` branch.
-3. Render reads `render.yaml` and shows the plan - one web service, one
+3. Render reads `render.yaml` and shows the plan - two web services, one
    Postgres. Review it and click **Apply**.
 4. Once the build finishes, Render gives a public URL that serves both the
    frontend and the API at `/v1` (same origin, so no `VITE_API_BASE_URL`
@@ -103,17 +111,19 @@ after 30 days.
 [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push
 and pull request: backend and frontend tests in parallel, then the
 docker-compose-based integration and e2e suites, and - only on a push to
-`main`, once everything else passed - triggers a Render deploy and polls
-`/health` until it comes back healthy.
+`main`, once everything else passed - deploys to **dev** and polls dev's
+`/health` until it reports the pushed commit as its `version`. Production
+is never deployed by a push.
 
 `render.yaml` sets `autoDeploy: false`, so Render *only* deploys when this
 pipeline tells it to - a push alone no longer triggers one. That requires
-two repo settings (Settings → Secrets and variables → Actions):
+these repository settings (Settings → Secrets and variables → Actions),
+each taken from the matching service in the Render dashboard:
 
-- Secret `RENDER_DEPLOY_HOOK_URL` - from the Render dashboard, the
-  `next-in-dining` service's Settings → Deploy Hook.
-- Variable `RENDER_APP_URL` - the service's public URL (e.g.
-  `https://next-in-dining.onrender.com`), used to poll `/health`.
+- Secrets `RENDER_DEV_DEPLOY_HOOK_URL` / `RENDER_PROD_DEPLOY_HOOK_URL` -
+  the service's Settings → Deploy Hook.
+- Variables `RENDER_DEV_URL` / `RENDER_PROD_URL` - the service's public
+  URL (e.g. `https://next-in-dining.onrender.com`), used to poll `/health`.
 
 ## Tests
 
@@ -122,7 +132,9 @@ cd backend && make test
 cd frontend && npm test
 ```
 
-`GET /health` (a trivial DB round-trip, separate from `/`) is what
+`GET /health` (a trivial DB round-trip, separate from `/`) returns the
+`environment` (`APP_ENV`) and deployed `version` (`APP_VERSION`, else
+Render's `RENDER_GIT_COMMIT`). It's what
 Render's health check and the CI pipeline poll after a deploy; it's
 covered by `backend/tests/test_health.py`.
 
