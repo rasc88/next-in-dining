@@ -1,0 +1,71 @@
+name: Promote to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "I confirm promoting this release to production"
+        type: boolean
+        default: false
+      version:
+        description: "Commit SHA to promote (leave empty for the one dev is serving)"
+        type: string
+        required: false
+
+concurrency: production
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - name: Require confirmation
+        if: ${{ !inputs.confirm }}
+        run: |
+          echo "::error::Tick the confirmation checkbox to promote to production"
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve the version to promote
+        id: version
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          version="$REQUESTED"
+          if [ -z "$version" ]; then
+            version=$(curl -sf --retry 5 --retry-delay 15 --retry-all-errors "${{ vars.RENDER_DEV_URL }}/health" | jq -r .version)
+            echo "Dev is serving $version"
+          fi
+          sha=$(git rev-parse --verify "$version^{commit}")
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "::error::$sha is not on main"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Promoting $sha: $(git log -1 --format=%s "$sha")" >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: ${{ vars.RENDER_PROD_URL }}
+    steps:
+      - name: Trigger Render deploy of that commit to production
+        run: curl -sf -X POST "${{ secrets.RENDER_PROD_DEPLOY_HOOK_URL }}&ref=${{ needs.resolve.outputs.sha }}"
+      - name: Wait for production to serve it
+        run: |
+          for i in $(seq 1 40); do
+            version=$(curl -sf "${{ vars.RENDER_PROD_URL }}/health" | jq -r .version || true)
+            if [ "$version" = "${{ needs.resolve.outputs.sha }}" ]; then
+              echo "Production is healthy and serving ${{ needs.resolve.outputs.sha }}"
+              exit 0
+            fi
+            echo "Production serves '${version:-nothing}' (attempt $i/40), retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::Production never started serving ${{ needs.resolve.outputs.sha }}"
+          exit 1

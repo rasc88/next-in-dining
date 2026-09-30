@@ -125,6 +125,22 @@ each taken from the matching service in the Render dashboard:
 - Variables `RENDER_DEV_URL` / `RENDER_PROD_URL` - the service's public
   URL (e.g. `https://next-in-dining.onrender.com`), used to poll `/health`.
 
+### Promoting to production
+
+[.github/workflows/promote.yml](.github/workflows/promote.yml) is the only
+way production changes. Run it by hand from Actions → **Promote to
+production** → Run workflow, tick the confirmation checkbox, and
+optionally give a commit SHA (by default it promotes whatever dev's
+`/health` reports as its `version`). It checks the commit is on `main`,
+waits for approval on the `production` environment, deploys exactly that
+commit to production (Render's deploy hook with `&ref=<sha>`), and polls
+production's `/health` until it reports that version.
+
+One-time setup in Settings → Environments: create `production` with
+yourself as a **Required reviewer**, and keep the
+`RENDER_PROD_DEPLOY_HOOK_URL` secret there so only an approved job can
+deploy to production.
+
 ## Tests
 
 ```bash
