@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, status
 
 from app.auth import require_guest_party, require_host_token
@@ -13,6 +15,9 @@ from app.models import (
     WaitlistParty,
 )
 from app.store import store
+from app.telemetry import METRIC_ATTRIBUTES, parties_created, party_creation_failures, party_transitions
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/waitlist")
 
@@ -24,13 +29,19 @@ router = APIRouter(prefix="/waitlist")
     tags=["Waitlist (Host)"],
 )
 def join_waitlist(payload: JoinWaitlistInput) -> JoinWaitlistResult:
-    party, guest_token = store.create_party(
-        guest_name=payload.guest_name,
-        phone_number=payload.phone_number,
-        party_size=payload.party_size,
-        seating_category=payload.seating_category,
-        notes=payload.notes,
-    )
+    try:
+        party, guest_token = store.create_party(
+            guest_name=payload.guest_name,
+            phone_number=payload.phone_number,
+            party_size=payload.party_size,
+            seating_category=payload.seating_category,
+            notes=payload.notes,
+        )
+    except Exception:
+        party_creation_failures.add(1, METRIC_ATTRIBUTES)
+        logger.exception("Failed to create party")
+        raise
+    parties_created.add(1, METRIC_ATTRIBUTES)
     return JoinWaitlistResult(party=party, guest_token=guest_token)
 
 
@@ -51,7 +62,9 @@ def get_active_parties() -> ActiveQueue:
     dependencies=[Depends(require_host_token)],
 )
 def update_party_state(party_id: str, payload: UpdatePartyStateRequest) -> WaitlistParty:
-    return store.update_party_state(party_id, payload.action)
+    party = store.update_party_state(party_id, payload.action)
+    party_transitions.add(1, {**METRIC_ATTRIBUTES, "to_state": party.state.value})
+    return party
 
 
 @router.get("/me", response_model=GuestStatus, tags=["Waitlist (Guest)"])
@@ -63,7 +76,9 @@ def get_guest_status(party: WaitlistParty = Depends(require_guest_party)) -> Gue
 
 @router.post("/me/cancel", response_model=WaitlistParty, tags=["Waitlist (Guest)"])
 def cancel_my_party(party: WaitlistParty = Depends(require_guest_party)) -> WaitlistParty:
-    return store.cancel_party(party.id)
+    cancelled = store.cancel_party(party.id)
+    party_transitions.add(1, {**METRIC_ATTRIBUTES, "to_state": cancelled.state.value})
+    return cancelled
 
 
 @router.post(

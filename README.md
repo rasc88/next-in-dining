@@ -205,6 +205,40 @@ Loki on `:3100` and Tempo on `:3200`. Tear it down with
 `docker compose -f observability/docker-compose.yaml down` (add `-v` to
 drop the stored data).
 
+### Application metrics and dashboard
+
+Besides the automatic HTTP/DB telemetry, the backend records its own
+metrics (in Prometheus naming), each labelled with `environment` and
+`version`:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `waitlist_parties_created_total` | counter | Parties that joined the waitlist |
+| `waitlist_party_creation_failures_total` | counter | Join requests that failed with a server error |
+| `waitlist_party_transitions_total` | counter | State changes, by resulting state (`to_state`) |
+| `waitlist_parties_waiting` | gauge | Parties currently waiting |
+
+[observability/grafana/dashboards/waitlist.json](observability/grafana/dashboards/waitlist.json)
+("Next in Dining - Waitlist") charts them, filterable by environment and
+version. The local Grafana loads it automatically; it picks its Prometheus
+datasource through a variable, so the same file imports as-is into any
+other Grafana (Dashboards → New → Import).
+
+### Grafana Cloud (dev and prod)
+
+The deployed environments send telemetry to a Grafana Cloud (free tier)
+stack instead of the self-hosted one - same components (Prometheus-
+compatible metrics, Loki, Tempo, Grafana), managed. In the Grafana Cloud
+portal: your stack → **Connections → Add new connection → OpenTelemetry
+(OTLP)**, create a token, and copy the two values it shows into **both**
+Render services' Environment settings:
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT` - e.g.
+  `https://otlp-gateway-prod-<region>.grafana.net/otlp`
+- `OTEL_EXPORTER_OTLP_HEADERS` - `Authorization=Basic%20<base64 token>`
+
+Then import `waitlist.json` into the Grafana Cloud stack.
+
 ## Tests
 
 ```bash

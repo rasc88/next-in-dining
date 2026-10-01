@@ -11,6 +11,7 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExp
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
@@ -24,6 +25,34 @@ SERVICE_NAME = "next-in-dining"
 APP_ENV = os.environ.get("APP_ENV", "local")
 # The image tag CI bakes into the Docker image (see Dockerfile).
 APP_VERSION = os.environ.get("APP_VERSION", "dev")
+
+# Every app metric carries these, so dashboards and alerts can split by
+# environment and deployed version regardless of how the backend maps
+# resource attributes to labels.
+METRIC_ATTRIBUTES = {"environment": APP_ENV, "version": APP_VERSION}
+
+
+def _observe_waiting_parties(options: CallbackOptions) -> list[Observation]:
+    # Imported here: app.store pulls in the DB layer, and this callback only
+    # runs on export, long after startup.
+    from app.store import store
+
+    return [Observation(len(store.waiting_parties_ordered()), METRIC_ATTRIBUTES)]
+
+
+# Created through the global (proxy) meter, so they're no-ops until
+# setup_telemetry() installs a real MeterProvider.
+_meter = metrics.get_meter(SERVICE_NAME)
+parties_created = _meter.create_counter("waitlist.parties.created", description="Parties that joined the waitlist")
+party_creation_failures = _meter.create_counter(
+    "waitlist.party.creation.failures", description="Join requests that failed with a server error"
+)
+party_transitions = _meter.create_counter(
+    "waitlist.party.transitions", description="Party state changes, by resulting state (to_state)"
+)
+_meter.create_observable_gauge(
+    "waitlist.parties.waiting", callbacks=[_observe_waiting_parties], description="Parties currently waiting"
+)
 
 
 def setup_telemetry(app: FastAPI, engine: Engine) -> None:
