@@ -19,6 +19,12 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://nid:nid@db:5432/nid
+      APP_ENV: ${APP_ENV:-local}
+      # Empty (telemetry off) unless set, e.g. to
+      # http://host.docker.internal:4318 for observability/docker-compose.yaml.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy

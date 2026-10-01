@@ -175,6 +175,36 @@ tests and docker-compose export nothing. To turn it on, set:
 On Render both are declared in `render.yaml` with `sync: false` and set per
 service in the dashboard.
 
+### Local observability stack
+
+[observability/](observability/) is a separate Compose project with an
+OpenTelemetry Collector, Prometheus (metrics), Loki (logs), Tempo
+(traces) and Grafana (dashboards), with Grafana's datasources
+pre-provisioned:
+
+```bash
+docker compose -f observability/docker-compose.yaml up -d
+```
+
+The collector listens for OTLP on `localhost:4317` (gRPC) and
+`localhost:4318` (HTTP). Point the app at it:
+
+```bash
+# app in docker-compose (reaches the host through host.docker.internal)
+OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 docker compose up --build -d
+
+# or the dev server
+cd backend && OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 make run
+```
+
+Then open Grafana at <http://localhost:3000> (no login locally) →
+Explore. Metrics carry `service_name`, `deployment_environment` and
+`service_version` labels; metrics show up after up to ~75s (60s SDK
+export interval + 15s Prometheus scrape). Prometheus is also on `:9090`,
+Loki on `:3100` and Tempo on `:3200`. Tear it down with
+`docker compose -f observability/docker-compose.yaml down` (add `-v` to
+drop the stored data).
+
 ## Tests
 
 ```bash
