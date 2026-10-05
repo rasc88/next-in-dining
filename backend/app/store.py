@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -169,7 +170,7 @@ class Store:
     ) -> tuple[WaitlistParty, str]:
         # The SMS gateway only delivers plain ASCII, so store the name the way
         # it will be texted back to the guest.
-        guest_name = guest_name.strip().encode("ascii").decode("ascii")
+        guest_name = unicodedata.normalize("NFKD", guest_name.strip()).encode("ascii", "ignore").decode("ascii")
         with db.SessionLocal() as session:
             row = WaitlistPartyRow(
                 id=str(uuid.uuid4()),

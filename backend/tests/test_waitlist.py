@@ -24,6 +24,12 @@ def test_join_waitlist_creates_a_waiting_party(client: TestClient) -> None:
     assert body["guestToken"]
 
 
+def test_join_waitlist_accepts_non_ascii_guest_name(client: TestClient) -> None:
+    body = join_waitlist(client, guestName="  José Núñez ")
+
+    assert body["party"]["guestName"] == "Jose Nunez"
+
+
 def test_join_waitlist_rejects_invalid_party_size(client: TestClient) -> None:
     response = client.post(
         "/v1/waitlist/join",
