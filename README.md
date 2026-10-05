@@ -239,6 +239,35 @@ Render services' Environment settings:
 
 Then import `waitlist.json` into the Grafana Cloud stack.
 
+Render only applies changed environment variables on a **deploy** -
+"Restart service" keeps the previous deploy's environment. On dev,
+"Manual Deploy → Deploy latest reference" is fine; on production, run
+the promotion workflow (re-promoting the current tag works) instead, so
+production never jumps to a newer image outside the approval flow.
+
+### Alerting
+
+[observability/grafana/provisioning/alerting/rules.json](observability/grafana/provisioning/alerting/rules.json)
+defines **Repeated party creation failures**: it fires when 3 or more
+join requests fail with a server error within 5 minutes (per environment
+and version), sustained for 2 minutes - an isolated error doesn't page
+anyone, a stream of guests unable to join the queue does. Each alert
+carries `service`, `environment`, `version`, `owner` and `severity`
+labels plus `summary`, `description` and a `dashboard_url` annotation
+that opens the dashboard filtered to the failing environment and version.
+
+The local Grafana loads it from disk. For Grafana Cloud, push it with a
+service account token that has the **Admin** role (the alerting
+provisioning API requires it):
+
+```bash
+export GRAFANA_URL=https://<stack>.grafana.net
+export GRAFANA_TOKEN=<service account token>
+python3 observability/grafana/push_alert_rules.py
+```
+
+The script is idempotent - re-run it after editing `rules.json`.
+
 ## Tests
 
 ```bash

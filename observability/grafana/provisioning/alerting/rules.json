@@ -1,0 +1,66 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "next-in-dining",
+      "folder": "next-in-dining",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "party-creation-failures",
+          "title": "Repeated party creation failures",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "${PROM_DATASOURCE_UID}",
+              "model": {
+                "refId": "A",
+                "instant": true,
+                "range": false,
+                "expr": "sum by (environment, version) (increase(waitlist_party_creation_failures_total[5m]))"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        2
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "2m",
+          "labels": {
+            "service": "next-in-dining",
+            "owner": "rasc88",
+            "severity": "page"
+          },
+          "annotations": {
+            "summary": "Guests can't join the waitlist in {{ .Labels.environment }} ({{ .Labels.version }})",
+            "description": "{{ printf \"%.0f\" .Values.A.Value }} join requests failed with a server error in the last 5 minutes (threshold: 3, sustained for 2 minutes) on next-in-dining {{ .Labels.environment }}, version {{ .Labels.version }}. Guests trying to join the queue are getting errors.",
+            "dashboard_url": "http://localhost:3000/d/next-in-dining-waitlist?var-environment={{ .Labels.environment }}&var-version={{ .Labels.version }}"
+          }
+        }
+      ]
+    }
+  ]
+}

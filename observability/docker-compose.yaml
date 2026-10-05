@@ -47,6 +47,9 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      # Interpolated into grafana/provisioning/alerting/rules.json, which
+      # push_alert_rules.py fills in differently for Grafana Cloud.
+      PROM_DATASOURCE_UID: prometheus
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
