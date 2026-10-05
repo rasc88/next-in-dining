@@ -13,7 +13,8 @@ ideally with a backend test that fails the same way the alert describes.
 If you find a real bug:
 - make the smallest correction that fixes it,
 - add a regression test that would have caught it,
-- run the backend tests with `make -C backend test` until they pass,
+- run the backend tests with exactly `make -C backend test` from the
+  repository root (relative paths, no `cd`) until they pass,
 - commit the fix with `git add` + `git commit`, with a clear message that
   names the alert and the root cause.
 
