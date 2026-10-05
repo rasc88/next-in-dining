@@ -268,6 +268,13 @@ python3 observability/grafana/push_alert_rules.py
 
 The script is idempotent - re-run it after editing `rules.json`.
 
+### On-call agent
+
+[on-call-engineer/](on-call-engineer/) polls Grafana for firing alerts and
+hands each new incident to a headless Claude Code session that
+investigates, fixes and commits (never pushes). See its
+[README](on-call-engineer/README.md).
+
 ## Tests
 
 ```bash

@@ -1,0 +1,56 @@
+# On-call engineer
+
+An AI agent as the first responder to production alerts. [oncall.py](oncall.py)
+polls Grafana's alert API every minute; when a `next-in-dining` alert
+starts **firing**, it launches a headless Claude Code session in the repo
+with [prompt.md](prompt.md) plus the alert's full JSON (labels, deployed
+version, description, dashboard URL). The agent investigates, reproduces
+the failure, and - if it finds a real bug - commits the smallest fix with
+a regression test. It never pushes: you review the commit and push it,
+which deploys it to dev through CI.
+
+## Run it
+
+Prerequisites: the `claude` CLI on your `PATH`, logged in
+(`curl -fsSL https://claude.ai/install.sh | bash`, then run `claude` once),
+and the backend's virtualenv (`make -C backend install`) so the agent can
+run the tests.
+
+```bash
+# Grafana Cloud: a service account with the Viewer role is enough to read alerts
+export GRAFANA_URL=https://<stack>.grafana.net
+export GRAFANA_TOKEN=<service account token>
+python3 on-call-engineer/oncall.py
+
+# Local Grafana (observability/docker-compose.yaml) needs no token
+GRAFANA_URL=http://localhost:3000 python3 on-call-engineer/oncall.py
+```
+
+`--once` polls a single time and exits. `POLL_SECONDS` and `CLAUDE_BIN`
+override the poll interval and the `claude` executable.
+
+## What it does with an alert
+
+- Only alerts labelled `service=next-in-dining` in a firing state
+  (`Alerting…` - not `Pending`) are handled.
+- Each incident (alert + environment + version + the moment it started
+  firing) gets **one** agent session; handled incidents are recorded in
+  `state.json`, so an alert that keeps firing doesn't relaunch the agent,
+  while one that resolves and fires again does.
+- The session's output is saved to `logs/<timestamp>-<environment>.log`,
+  headed by the alert that triggered it.
+- The agent is limited to reading/editing files, running the backend
+  tests and `git add`/`commit` (see `ALLOWED_TOOLS`) - no push, no network,
+  no deploys.
+
+`state.json` and `logs/` are local and git-ignored.
+
+## In a real setup
+
+This is a proof of concept on a laptop. In production you'd typically
+have Grafana send the alert to a webhook (contact point) instead of being
+polled; the webhook starts an isolated container job with the repo, the
+`claude` CLI and read access to logs and metrics; the job runs the agent
+headless, stores the session log, and the compute is torn down. A real
+on-call agent also decides when to escalate to a human instead of trying
+to fix things itself.
